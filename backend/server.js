@@ -7,9 +7,16 @@ require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, {
+  cors: {
+    origin: ['https://exam-proctor-lilac.vercel.app', 'http://localhost:3000'],
+    methods: ['GET', 'POST']
+  }
+});
 
-app.use(cors());
+app.use(cors({
+  origin: ['https://exam-proctor-lilac.vercel.app', 'http://localhost:3000']
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // Routes
@@ -25,6 +32,12 @@ io.on('connection', (socket) => {
 });
 
 app.set('io', io);
+
+setInterval(() => {
+  require('https').get('https://exam-proctor-backend-nevz.onrender.com/ping');
+}, 14 * 60 * 1000);
+
+app.get('/ping', (req, res) => res.send('ok'));
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
