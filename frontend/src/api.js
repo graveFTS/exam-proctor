@@ -1,9 +1,7 @@
 import axios from 'axios';
 
-export const BACKEND = 'https://exam-proctor-backend-nevz.onrender.com';
-
-// ⚠️ After running Google Colab, paste your ngrok URL here:
-export const AI_API = 'https://examguard-ai-h7ty.onrender.com';
+// ✅ Use Render backend URL in production, localhost in development
+export const BACKEND = process.env.REACT_APP_BACKEND_URL || 'http://localhost:5000';
 
 const api = axios.create({ baseURL: BACKEND + '/api' });
 

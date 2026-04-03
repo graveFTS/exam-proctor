@@ -17,7 +17,13 @@ export default function Login() {
       const { data } = await api.post(endpoint, form);
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
-      nav('/dashboard');
+
+      // ✅ redirect based on role
+      if (data.user.role === 'admin') {
+        nav('/admin');
+      } else {
+        nav('/dashboard');
+      }
     } catch (e) {
       setErr(e.response?.data?.message || 'Something went wrong');
     }
@@ -30,7 +36,6 @@ export default function Login() {
         <div style={S.logo}>⬡</div>
         <h1 style={S.title}>ExamGuard</h1>
         <p style={S.sub}>AI-Powered Proctoring System</p>
-
         <form onSubmit={handle} style={S.form}>
           {isRegister && (
             <input style={S.input} placeholder="Full Name" value={form.name}
@@ -52,7 +57,6 @@ export default function Login() {
             {loading ? 'Please wait...' : isRegister ? 'Create Account' : 'Sign In'}
           </button>
         </form>
-
         <p style={S.toggle}>
           {isRegister ? 'Already have an account? ' : "Don't have an account? "}
           <span style={S.link} onClick={() => setIsRegister(!isRegister)}>
@@ -74,11 +78,10 @@ const S = {
   sub: { color: 'var(--muted)', fontSize: 13, marginBottom: 28 },
   form: { display: 'flex', flexDirection: 'column', gap: 12 },
   input: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
-    padding: '12px 14px', color: 'var(--text)', fontSize: 14, outline: 'none',
-    fontFamily: 'var(--font)' },
+    padding: '12px 14px', color: 'var(--text)', fontSize: 14, outline: 'none', fontFamily: 'var(--font)' },
   btn: { background: 'var(--accent)', color: '#0a0a0f', fontWeight: 700, fontSize: 15,
     border: 'none', borderRadius: 8, padding: '13px', marginTop: 4,
-    fontFamily: 'var(--font)', transition: 'opacity .2s' },
+    fontFamily: 'var(--font)', transition: 'opacity .2s', cursor: 'pointer' },
   err: { color: 'var(--danger)', fontSize: 13 },
   toggle: { marginTop: 20, fontSize: 13, color: 'var(--muted)' },
   link: { color: 'var(--accent)', cursor: 'pointer', fontWeight: 600 },

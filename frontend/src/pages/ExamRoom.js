@@ -9,6 +9,7 @@ export default function ExamRoom() {
   const { id } = useParams();
   const nav = useNavigate();
   const webcamRef = useRef(null);
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
 
   const [exam, setExam] = useState(null);
   const [answers, setAnswers] = useState({});
@@ -18,28 +19,32 @@ export default function ExamRoom() {
   const [result, setResult] = useState(null);
   const [camError, setCamError] = useState(false);
   const [current, setCurrent] = useState(0);
-  const [aiStatus, setAiStatus] = useState('checking'); // 'online' | 'offline' | 'checking'
+  const [aiStatus, setAiStatus] = useState('checking');
   const [sessionStats, setSessionStats] = useState(null);
+
+  // ✅ Go back to correct dashboard based on role
+  const goHome = () => {
+    if (user.role === 'admin') nav('/admin');
+    else nav('/dashboard');
+  };
 
   const addNotif = useCallback((msg, type = 'warn', severity = 'MEDIUM') => {
     const n = { msg, type, severity, id: Date.now(), time: new Date().toLocaleTimeString() };
     setNotifications(ns => [n, ...ns].slice(0, 8));
   }, []);
 
-  // Load exam + check AI health + reset Colab stats
+  // Load exam + check AI health + reset stats
   useEffect(() => {
     api.get(`/exam/${id}`)
       .then(r => { setExam(r.data); setTimeLeft(r.data.duration * 60); })
-      .catch(() => nav('/dashboard'));
+      .catch(() => goHome());
 
-    // Check if AI is online
     api.get('/proctor/health')
       .then(r => setAiStatus(r.data.online ? 'online' : 'offline'))
       .catch(() => setAiStatus('offline'));
 
-    // Reset Colab stats for fresh session
     api.post('/proctor/reset').catch(() => {});
-  }, [id, nav]);
+  }, [id]);
 
   // Countdown timer
   useEffect(() => {
@@ -49,39 +54,23 @@ export default function ExamRoom() {
     return () => clearTimeout(t);
   }, [timeLeft, submitted]);
 
-  // ── AI Proctoring: send frame every 5s via BACKEND ──
+  // AI Proctoring every 5s
   useEffect(() => {
     if (submitted) return;
     const interval = setInterval(async () => {
       if (!webcamRef.current) return;
       const imageSrc = webcamRef.current.getScreenshot();
       if (!imageSrc) return;
-
       try {
-        // Send to backend /api/proctor/analyze
-        // Backend forwards to Colab, saves violations, returns result
-        const { data } = await api.post('/proctor/analyze', {
-          image: imageSrc,
-          examId: id
-        });
-
-        if (data.error === 'AI offline') {
-          setAiStatus('offline');
-          return;
-        }
-
+        const { data } = await api.post('/proctor/analyze', { image: imageSrc, examId: id });
+        if (data.error === 'AI offline') { setAiStatus('offline'); return; }
         setAiStatus('online');
-
-        // Show violations as notifications
-        if (data.violations && data.violations.length > 0) {
+        if (data.violations && data.violations.length > 0)
           data.violations.forEach(v => addNotif(v.message, v.type, v.severity));
-        }
-
       } catch {
         setAiStatus('offline');
       }
     }, 5000);
-
     return () => clearInterval(interval);
   }, [submitted, id, addNotif]);
 
@@ -89,9 +78,7 @@ export default function ExamRoom() {
   useEffect(() => {
     if (submitted) return;
     const interval = setInterval(() => {
-      api.get('/proctor/stats')
-        .then(r => setSessionStats(r.data))
-        .catch(() => {});
+      api.get('/proctor/stats').then(r => setSessionStats(r.data)).catch(() => {});
     }, 30000);
     return () => clearInterval(interval);
   }, [submitted]);
@@ -99,18 +86,13 @@ export default function ExamRoom() {
   const handleSubmit = async () => {
     if (submitted) return;
     setSubmitted(true);
-
-    // Fetch final violation count before submitting
     try {
       const statsRes = await api.get('/proctor/stats');
       setSessionStats(statsRes.data);
     } catch {}
-
     try {
       const answerArr = exam.questions.map((_, i) => answers[i] ?? -1);
       const { data } = await api.post(`/exam/${id}/submit`, { answers: answerArr });
-
-      // Get violations for this exam
       const vRes = await api.get(`/proctor/violations/${id}`).catch(() => ({ data: [] }));
       setResult({ ...data, violations: vRes.data });
     } catch {
@@ -120,7 +102,7 @@ export default function ExamRoom() {
 
   if (!exam) return <div style={{ color: '#fff', padding: 40 }}>Loading exam...</div>;
 
-  // ── Result Page ──
+  // Result Page
   if (result) return (
     <div style={S.resultPage}>
       <div style={S.resultCard}>
@@ -130,8 +112,6 @@ export default function ExamRoom() {
         <p style={{ color: 'var(--muted)', marginBottom: 16 }}>
           Score: {result.score} / {result.total}
         </p>
-
-        {/* Violation Summary */}
         {result.violations && result.violations.length > 0 && (
           <div style={S.violSummary}>
             <p style={{ color: 'var(--warn)', fontWeight: 700, marginBottom: 8 }}>
@@ -139,9 +119,7 @@ export default function ExamRoom() {
             </p>
             {result.violations.slice(0, 3).map((v, i) => (
               <div key={i} style={S.violItem}>
-                <span style={{ ...S.sevBadge, background: severityColor(v.severity) }}>
-                  {v.severity}
-                </span>
+                <span style={{ ...S.sevBadge, background: severityColor(v.severity) }}>{v.severity}</span>
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>{v.message}</span>
               </div>
             ))}
@@ -152,8 +130,8 @@ export default function ExamRoom() {
             )}
           </div>
         )}
-
-        <button style={S.homeBtn} onClick={() => nav('/dashboard')}>Back to Dashboard</button>
+        {/* ✅ Goes to correct dashboard */}
+        <button style={S.homeBtn} onClick={goHome}>Back to Dashboard</button>
       </div>
     </div>
   );
@@ -163,12 +141,11 @@ export default function ExamRoom() {
 
   return (
     <div style={S.page}>
-      {/* ── Top Bar ── */}
+      {/* Top Bar */}
       <div style={S.topBar}>
         <span style={S.examTitle}>{exam.title}</span>
         {timeLeft !== null && <Timer seconds={timeLeft} />}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {/* AI Status indicator */}
           <div style={S.aiStatus}>
             <span style={{ ...S.aiDot, background: aiStatus === 'online' ? 'var(--accent)' : aiStatus === 'offline' ? 'var(--danger)' : 'var(--warn)' }} />
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
@@ -179,13 +156,13 @@ export default function ExamRoom() {
         </div>
       </div>
 
-      {/* Progress bar */}
+      {/* Progress */}
       <div style={S.progressBar}>
         <div style={{ ...S.progressFill, width: `${progress}%` }} />
       </div>
 
       <div style={S.body}>
-        {/* ── Left Panel ── */}
+        {/* Left Panel */}
         <div style={S.camPanel}>
           {camError ? (
             <div style={S.camError}>⚠️ Camera access denied.<br />Enable camera to continue.</div>
@@ -196,22 +173,23 @@ export default function ExamRoom() {
               isActive={!submitted}
             />
           )}
-
-          {/* Session Stats */}
           {sessionStats && (
             <div style={S.statsBox}>
               <div style={S.statsTitle}>📊 Session Stats</div>
               <div style={S.statsRow}><span>Frames analyzed</span><span>{sessionStats.total_frames}</span></div>
-              <div style={S.statsRow}><span>Violations</span><span style={{ color: sessionStats.total_violations > 0 ? 'var(--danger)' : 'var(--accent)' }}>{sessionStats.total_violations}</span></div>
+              <div style={S.statsRow}><span>Violations</span>
+                <span style={{ color: sessionStats.total_violations > 0 ? 'var(--danger)' : 'var(--accent)' }}>
+                  {sessionStats.total_violations}
+                </span>
+              </div>
               <div style={S.statsRow}><span>No face</span><span>{sessionStats.no_face_count}</span></div>
               <div style={S.statsRow}><span>Objects</span><span>{sessionStats.object_violations}</span></div>
             </div>
           )}
-
           <Notifications items={notifications} />
         </div>
 
-        {/* ── Question Panel ── */}
+        {/* Question Panel */}
         <div style={S.questionPanel}>
           <div style={S.qHeader}>Question {current + 1} of {exam.questions.length}</div>
           <div style={S.qText}>{q.question}</div>
@@ -228,11 +206,9 @@ export default function ExamRoom() {
               </button>
             ))}
           </div>
-
           <div style={S.nav}>
             <button style={S.navBtn} disabled={current === 0}
               onClick={() => setCurrent(c => c - 1)}>← Prev</button>
-
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
               {exam.questions.map((_, i) => (
                 <button key={i} onClick={() => setCurrent(i)} style={{
@@ -241,7 +217,6 @@ export default function ExamRoom() {
                 }} />
               ))}
             </div>
-
             {current < exam.questions.length - 1
               ? <button style={S.navBtn} onClick={() => setCurrent(c => c + 1)}>Next →</button>
               : <button style={{ ...S.navBtn, background: 'var(--accent)', color: '#000' }} onClick={handleSubmit}>Submit</button>
@@ -253,10 +228,7 @@ export default function ExamRoom() {
   );
 }
 
-// Helper: severity color
-const severityColor = (s) => ({
-  LOW: '#22c55e40', MEDIUM: '#ffaa0040', HIGH: '#ff444440', CRITICAL: '#ff000060'
-}[s] || '#ffaa0040');
+const severityColor = (s) => ({ LOW: '#22c55e40', MEDIUM: '#ffaa0040', HIGH: '#ff444440', CRITICAL: '#ff000060' }[s] || '#ffaa0040');
 
 const S = {
   page: { minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' },
