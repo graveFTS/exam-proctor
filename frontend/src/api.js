@@ -3,7 +3,7 @@ import axios from 'axios';
 export const BACKEND = 'https://exam-proctor-backend-nevz.onrender.com';
 
 // ⚠️ After running Google Colab, paste your ngrok URL here:
-export const COLAB_API = 'https://fan-howard-lawrence-factor.trycloudflare.com';
+export const COLAB_API = 'https://examguard-ai-h7ty.onrender.com';
 
 const api = axios.create({ baseURL: BACKEND + '/api' });
 
