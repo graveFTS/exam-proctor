@@ -20,7 +20,7 @@ export default function Notifications({ items }) {
           return (
             <div key={n.id} style={{ ...S.item, background: ts.bg, borderColor: ts.border, color: ts.color }}>
               <span style={S.icon}>{ts.icon}</span>
-              <span style={S.msg}>{n.msg}</span>
+              <span style={S.msg}>{n.message}</span>
               {n.time && <span style={S.time}>{n.time}</span>}
             </div>
           );
