@@ -6,8 +6,14 @@ import os
 from PIL import Image
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from ultralytics import YOLO
 from datetime import datetime
+import torch
+from ultralytics import YOLO
+
+# Force old behavior (trusted source only)
+torch.load = lambda *args, **kwargs: torch.serialization.load(*args, weights_only=False, **kwargs)
+
+yolo_model = YOLO('yolov8n.pt',task='detect')
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
