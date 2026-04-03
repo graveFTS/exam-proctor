@@ -10,11 +10,13 @@ from datetime import datetime
 import torch
 from ultralytics import YOLO
 
-# Force old behavior (trusted source only)
-torch.load = lambda *args, **kwargs: torch.serialization.load(*args, weights_only=False, **kwargs)
 
-yolo_model = YOLO('yolov8n.pt',task='detect')
+MODEL_PATH = "yolov8n.pt"
 
+if not os.path.exists(MODEL_PATH):
+    print("Downloading YOLO model...")
+    
+yolo_model = YOLO(MODEL_PATH)
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
