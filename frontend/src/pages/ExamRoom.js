@@ -5,17 +5,17 @@ import WebcamMonitor from '../components/Webcam';
 import Notifications from '../components/Notifications';
 import Timer from '../components/Timer';
 
-// ✅ Compress image before sending to save bandwidth & speed up Render
-const compressImage = (base64, quality = 0.5, maxWidth = 320) => {
+// ✅ Compress image — balance between quality and speed
+// Colab handles 480px well and responds in ~1-2s
+const compressImage = (base64, quality = 0.7, maxWidth = 480) => {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const scale = Math.min(1, maxWidth / img.width);
-      canvas.width = img.width * scale;
+      const scale  = Math.min(1, maxWidth / img.width);
+      canvas.width  = img.width  * scale;
       canvas.height = img.height * scale;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
       resolve(canvas.toDataURL('image/jpeg', quality));
     };
     img.src = base64;
@@ -23,40 +23,38 @@ const compressImage = (base64, quality = 0.5, maxWidth = 320) => {
 };
 
 export default function ExamRoom() {
-  const { id } = useParams();
-  const nav = useNavigate();
+  const { id }  = useParams();
+  const nav     = useNavigate();
   const webcamRef = useRef(null);
   const lastNotifTime = useRef({});
+  const isAnalyzing   = useRef(false); // prevent overlapping requests
   const user = JSON.parse(localStorage.getItem('user') || '{}');
 
-  const [exam, setExam] = useState(null);
-  const [answers, setAnswers] = useState({});
-  const [timeLeft, setTimeLeft] = useState(null);
+  const [exam,          setExam]          = useState(null);
+  const [answers,       setAnswers]       = useState({});
+  const [timeLeft,      setTimeLeft]      = useState(null);
   const [notifications, setNotifications] = useState([]);
-  const [submitted, setSubmitted] = useState(false);
-  const [result, setResult] = useState(null);
-  const [camError, setCamError] = useState(false);
-  const [current, setCurrent] = useState(0);
-  const [aiStatus, setAiStatus] = useState('checking');
-  const [sessionStats, setSessionStats] = useState(null);
-  const [frameCount, setFrameCount] = useState(0);
+  const [submitted,     setSubmitted]     = useState(false);
+  const [result,        setResult]        = useState(null);
+  const [camError,      setCamError]      = useState(false);
+  const [current,       setCurrent]       = useState(0);
+  const [aiStatus,      setAiStatus]      = useState('checking');
+  const [sessionStats,  setSessionStats]  = useState(null);
+  const [frameCount,    setFrameCount]    = useState(0);
 
   const goHome = () => nav(user.role === 'admin' ? '/admin' : '/dashboard');
 
+  // ✅ 20s cooldown per type — prevents spam but still fast enough
   const addNotif = useCallback((msg, type = 'warn', severity = 'MEDIUM') => {
-    const now = Date.now();
+    const now  = Date.now();
     const last = lastNotifTime.current[type] || 0;
-
-    // ✅ Allow same type only once per 30 seconds — prevents spam
-    if (now - last < 30000) return;
+    if (now - last < 20000) return;
     lastNotifTime.current[type] = now;
-
     const n = { msg, type, severity, id: now, time: new Date().toLocaleTimeString() };
-    // ✅ Always add newest to end, Notifications component sorts by id desc
     setNotifications(ns => [...ns, n].slice(-10));
   }, []);
 
-  // Load exam + check AI + reset stats
+  // Load exam + check AI + reset
   useEffect(() => {
     api.get(`/exam/${id}`)
       .then(r => { setExam(r.data); setTimeLeft(r.data.duration * 60); })
@@ -77,17 +75,20 @@ export default function ExamRoom() {
     return () => clearTimeout(t);
   }, [timeLeft, submitted]);
 
-  // ── AI Proctoring every 10s (Render needs more time than Colab) ──
+  // ✅ AI Proctoring every 4s — fast for Colab
   useEffect(() => {
     if (submitted) return;
     const interval = setInterval(async () => {
       if (!webcamRef.current) return;
+      if (isAnalyzing.current) return; // skip if previous request still running
+
       const imageSrc = webcamRef.current.getScreenshot();
       if (!imageSrc) return;
 
+      isAnalyzing.current = true;
       try {
-        // ✅ Compress image from ~200KB to ~15KB before sending
-        const compressed = await compressImage(imageSrc, 0.4, 320);
+        // ✅ Quality 0.7 at 480px — good balance for Colab speed
+        const compressed = await compressImage(imageSrc, 0.7, 480);
         setFrameCount(f => f + 1);
 
         const { data } = await api.post('/proctor/analyze', {
@@ -97,44 +98,40 @@ export default function ExamRoom() {
 
         if (data.error === 'AI offline') {
           setAiStatus('offline');
-          return;
+        } else {
+          setAiStatus('online');
+          // ✅ Show violations immediately as they arrive
+          if (data.violations && data.violations.length > 0) {
+            data.violations.forEach(v => addNotif(v.message, v.type, v.severity));
+          }
         }
-
-        setAiStatus('online');
-
-        if (data.violations && data.violations.length > 0) {
-          data.violations.forEach(v => addNotif(v.message, v.type, v.severity));
-        }
-
-      } catch (err) {
-        console.error('Proctoring error:', err.message);
+      } catch {
         setAiStatus('offline');
+      } finally {
+        isAnalyzing.current = false; // always unlock
       }
-    }, 10000); // ✅ 10s interval — Render is slower than Colab
+    }, 4000); // ✅ Every 4 seconds
 
     return () => clearInterval(interval);
   }, [submitted, id, addNotif]);
 
-  // Fetch session stats every 60s
+  // Fetch session stats every 30s
   useEffect(() => {
     if (submitted) return;
     const interval = setInterval(() => {
       api.get('/proctor/stats').then(r => setSessionStats(r.data)).catch(() => {});
-    }, 60000);
+    }, 30000);
     return () => clearInterval(interval);
   }, [submitted]);
 
   const handleSubmit = async () => {
     if (submitted) return;
     setSubmitted(true);
-    try {
-      const statsRes = await api.get('/proctor/stats');
-      setSessionStats(statsRes.data);
-    } catch {}
+    try { const s = await api.get('/proctor/stats'); setSessionStats(s.data); } catch {}
     try {
       const answerArr = exam.questions.map((_, i) => answers[i] ?? -1);
-      const { data } = await api.post(`/exam/${id}/submit`, { answers: answerArr });
-      const vRes = await api.get(`/proctor/violations/${id}`).catch(() => ({ data: [] }));
+      const { data }  = await api.post(`/exam/${id}/submit`, { answers: answerArr });
+      const vRes      = await api.get(`/proctor/violations/${id}`).catch(() => ({ data: [] }));
       setResult({ ...data, violations: vRes.data });
     } catch {
       setResult({ score: 0, total: exam?.questions?.length, percent: 0, violations: [] });
@@ -153,14 +150,14 @@ export default function ExamRoom() {
         <p style={{ color: 'var(--muted)', marginBottom: 16 }}>
           Score: {result.score} / {result.total}
         </p>
-        {result.violations && result.violations.length > 0 && (
+        {result.violations?.length > 0 && (
           <div style={S.violSummary}>
             <p style={{ color: 'var(--warn)', fontWeight: 700, marginBottom: 8 }}>
               ⚠ {result.violations.length} violation(s) recorded
             </p>
             {result.violations.slice(0, 3).map((v, i) => (
               <div key={i} style={S.violItem}>
-                <span style={{ ...S.sevBadge, background: severityColor(v.severity) }}>{v.severity}</span>
+                <span style={{ ...S.sevBadge, background: sevColor(v.severity) }}>{v.severity}</span>
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>{v.message}</span>
               </div>
             ))}
@@ -176,7 +173,7 @@ export default function ExamRoom() {
     </div>
   );
 
-  const q = exam.questions[current];
+  const q        = exam.questions[current];
   const progress = ((current + 1) / exam.questions.length) * 100;
 
   return (
@@ -193,7 +190,7 @@ export default function ExamRoom() {
               animation: aiStatus === 'online' ? 'pulse 1.5s infinite' : 'none'
             }} />
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-              AI {aiStatus === 'online' ? `Online (${frameCount} frames)` : aiStatus === 'offline' ? 'Offline' : 'Checking...'}
+              AI {aiStatus === 'online' ? `Online (${frameCount})` : aiStatus === 'offline' ? 'Offline' : 'Checking...'}
             </span>
           </div>
           <button style={S.submitBtn} onClick={handleSubmit}>Submit Exam</button>
@@ -218,7 +215,6 @@ export default function ExamRoom() {
             />
           )}
 
-          {/* Session Stats */}
           {sessionStats && (
             <div style={S.statsBox}>
               <div style={S.statsTitle}>📊 Session Stats</div>
@@ -247,17 +243,19 @@ export default function ExamRoom() {
               <button key={i} style={{
                 ...S.option,
                 borderColor: answers[current] === i ? 'var(--accent)' : 'var(--border)',
-                background: answers[current] === i ? '#00ff9d15' : 'var(--bg)',
-                color: answers[current] === i ? 'var(--accent)' : 'var(--text)',
+                background : answers[current] === i ? '#00ff9d15'    : 'var(--bg)',
+                color      : answers[current] === i ? 'var(--accent)' : 'var(--text)',
               }} onClick={() => setAnswers({ ...answers, [current]: i })}>
                 <span style={S.optLetter}>{String.fromCharCode(65 + i)}</span>
                 {opt}
               </button>
             ))}
           </div>
+
           <div style={S.nav}>
             <button style={S.navBtn} disabled={current === 0}
               onClick={() => setCurrent(c => c - 1)}>← Prev</button>
+
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
               {exam.questions.map((_, i) => (
                 <button key={i} onClick={() => setCurrent(i)} style={{
@@ -266,6 +264,7 @@ export default function ExamRoom() {
                 }} />
               ))}
             </div>
+
             {current < exam.questions.length - 1
               ? <button style={S.navBtn} onClick={() => setCurrent(c => c + 1)}>Next →</button>
               : <button style={{ ...S.navBtn, background: 'var(--accent)', color: '#000' }} onClick={handleSubmit}>Submit</button>
@@ -277,55 +276,54 @@ export default function ExamRoom() {
   );
 }
 
-const severityColor = (s) => ({
-  LOW: '#22c55e40', MEDIUM: '#ffaa0040', HIGH: '#ff444440', CRITICAL: '#ff000060'
-}[s] || '#ffaa0040');
+const sevColor = s => ({ LOW:'#22c55e40', MEDIUM:'#ffaa0040', HIGH:'#ff444440', CRITICAL:'#ff000060' }[s] || '#ffaa0040');
 
 const S = {
-  page: { minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' },
-  topBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '12px 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)' },
-  examTitle: { fontFamily: 'var(--mono)', fontSize: 15, color: 'var(--text)' },
-  aiStatus: { display: 'flex', alignItems: 'center', gap: 6 },
-  aiDot: { width: 8, height: 8, borderRadius: '50%', display: 'inline-block' },
-  submitBtn: { background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 6,
-    padding: '8px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' },
-  progressBar: { height: 3, background: 'var(--border)' },
+  page:         { minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' },
+  topBar:       { display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '12px 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)' },
+  examTitle:    { fontFamily: 'var(--mono)', fontSize: 15, color: 'var(--text)' },
+  aiStatus:     { display: 'flex', alignItems: 'center', gap: 6 },
+  aiDot:        { width: 8, height: 8, borderRadius: '50%', display: 'inline-block' },
+  submitBtn:    { background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 6,
+                  padding: '8px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' },
+  progressBar:  { height: 3, background: 'var(--border)' },
   progressFill: { height: '100%', background: 'var(--accent)', transition: 'width .3s' },
-  body: { display: 'flex', flex: 1 },
-  camPanel: { width: 300, borderRight: '1px solid var(--border)', padding: 20,
-    display: 'flex', flexDirection: 'column', gap: 14, background: 'var(--surface)', overflowY: 'auto' },
-  camError: { background: '#ff44441a', border: '1px solid var(--danger)', borderRadius: 8,
-    padding: 16, color: 'var(--danger)', fontSize: 13, textAlign: 'center' },
-  statsBox: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 },
-  statsTitle: { fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)', marginBottom: 8 },
-  statsRow: { display: 'flex', justifyContent: 'space-between', fontSize: 12,
-    color: 'var(--text)', padding: '3px 0', borderBottom: '1px solid var(--border)' },
-  questionPanel: { flex: 1, padding: '32px 40px' },
-  qHeader: { fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--accent)', marginBottom: 16 },
-  qText: { fontSize: 20, fontWeight: 600, marginBottom: 28, lineHeight: 1.5 },
-  options: { display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 32 },
-  option: { display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px',
-    border: '1px solid', borderRadius: 10, fontSize: 15, textAlign: 'left',
-    transition: 'all .15s', fontFamily: 'var(--font)', cursor: 'pointer' },
-  optLetter: { width: 28, height: 28, borderRadius: '50%', border: '1px solid var(--border)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13,
-    fontWeight: 700, flexShrink: 0 },
-  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  navBtn: { background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)',
-    borderRadius: 8, padding: '10px 20px', fontSize: 14, fontFamily: 'var(--font)', cursor: 'pointer' },
-  dot2: { width: 12, height: 12, borderRadius: '50%', border: 'none', cursor: 'pointer', transition: 'background .2s' },
-  resultPage: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    background: 'radial-gradient(ellipse at 50% 0%, #0a1a0a 0%, #0a0a0f 60%)' },
-  resultCard: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16,
-    padding: '48px 40px', textAlign: 'center', maxWidth: 420, width: '100%' },
-  resultIcon: { fontSize: 56, marginBottom: 16 },
-  resultTitle: { fontFamily: 'var(--mono)', fontSize: 22, marginBottom: 24 },
-  scoreCircle: { fontSize: 52, fontWeight: 700, color: 'var(--accent)', fontFamily: 'var(--mono)', marginBottom: 8 },
-  violSummary: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
-    padding: 14, marginBottom: 20, textAlign: 'left' },
-  violItem: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
-  sevBadge: { fontSize: 10, padding: '2px 6px', borderRadius: 4, fontWeight: 700, whiteSpace: 'nowrap' },
-  homeBtn: { background: 'var(--accent)', color: '#0a0a0f', border: 'none', borderRadius: 8,
-    padding: '12px 32px', fontWeight: 700, fontSize: 15, fontFamily: 'var(--font)', cursor: 'pointer' },
+  body:         { display: 'flex', flex: 1 },
+  camPanel:     { width: 300, borderRight: '1px solid var(--border)', padding: 20,
+                  display: 'flex', flexDirection: 'column', gap: 14,
+                  background: 'var(--surface)', overflowY: 'auto' },
+  camError:     { background: '#ff44441a', border: '1px solid var(--danger)', borderRadius: 8,
+                  padding: 16, color: 'var(--danger)', fontSize: 13, textAlign: 'center' },
+  statsBox:     { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 12 },
+  statsTitle:   { fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--muted)', marginBottom: 8 },
+  statsRow:     { display: 'flex', justifyContent: 'space-between', fontSize: 12,
+                  color: 'var(--text)', padding: '3px 0', borderBottom: '1px solid var(--border)' },
+  questionPanel:{ flex: 1, padding: '32px 40px' },
+  qHeader:      { fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--accent)', marginBottom: 16 },
+  qText:        { fontSize: 20, fontWeight: 600, marginBottom: 28, lineHeight: 1.5 },
+  options:      { display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 32 },
+  option:       { display: 'flex', alignItems: 'center', gap: 14, padding: '16px 18px',
+                  border: '1px solid', borderRadius: 10, fontSize: 15, textAlign: 'left',
+                  transition: 'all .15s', fontFamily: 'var(--font)', cursor: 'pointer' },
+  optLetter:    { width: 28, height: 28, borderRadius: '50%', border: '1px solid var(--border)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 13, fontWeight: 700, flexShrink: 0 },
+  nav:          { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  navBtn:       { background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)',
+                  borderRadius: 8, padding: '10px 20px', fontSize: 14, fontFamily: 'var(--font)', cursor: 'pointer' },
+  dot2:         { width: 12, height: 12, borderRadius: '50%', border: 'none', cursor: 'pointer', transition: 'background .2s' },
+  resultPage:   { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'radial-gradient(ellipse at 50% 0%, #0a1a0a 0%, #0a0a0f 60%)' },
+  resultCard:   { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16,
+                  padding: '48px 40px', textAlign: 'center', maxWidth: 420, width: '100%' },
+  resultIcon:   { fontSize: 56, marginBottom: 16 },
+  resultTitle:  { fontFamily: 'var(--mono)', fontSize: 22, marginBottom: 24 },
+  scoreCircle:  { fontSize: 52, fontWeight: 700, color: 'var(--accent)', fontFamily: 'var(--mono)', marginBottom: 8 },
+  violSummary:  { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
+                  padding: 14, marginBottom: 20, textAlign: 'left' },
+  violItem:     { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  sevBadge:     { fontSize: 10, padding: '2px 6px', borderRadius: 4, fontWeight: 700, whiteSpace: 'nowrap' },
+  homeBtn:      { background: 'var(--accent)', color: '#0a0a0f', border: 'none', borderRadius: 8,
+                  padding: '12px 32px', fontWeight: 700, fontSize: 15, fontFamily: 'var(--font)', cursor: 'pointer' },
 };
