@@ -26,6 +26,7 @@ export default function ExamRoom() {
   const { id } = useParams();
   const nav = useNavigate();
   const webcamRef = useRef(null);
+  const lastNotifTime = useRef({});
   const user = JSON.parse(localStorage.getItem('user') || '{}');
 
   const [exam, setExam] = useState(null);
@@ -43,8 +44,16 @@ export default function ExamRoom() {
   const goHome = () => nav(user.role === 'admin' ? '/admin' : '/dashboard');
 
   const addNotif = useCallback((msg, type = 'warn', severity = 'MEDIUM') => {
-    const n = { msg, type, severity, id: Date.now(), time: new Date().toLocaleTimeString() };
-    setNotifications(ns => [n, ...ns].slice(0, 8));
+    const now = Date.now();
+    const last = lastNotifTime.current[type] || 0;
+
+    // ✅ Allow same type only once per 30 seconds — prevents spam
+    if (now - last < 30000) return;
+    lastNotifTime.current[type] = now;
+
+    const n = { msg, type, severity, id: now, time: new Date().toLocaleTimeString() };
+    // ✅ Always add newest to end, Notifications component sorts by id desc
+    setNotifications(ns => [...ns, n].slice(-10));
   }, []);
 
   // Load exam + check AI + reset stats
