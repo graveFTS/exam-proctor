@@ -5,6 +5,23 @@ import WebcamMonitor from '../components/Webcam';
 import Notifications from '../components/Notifications';
 import Timer from '../components/Timer';
 
+// ✅ Compress image before sending to save bandwidth & speed up Render
+const compressImage = (base64, quality = 0.5, maxWidth = 320) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const scale = Math.min(1, maxWidth / img.width);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = base64;
+  });
+};
+
 export default function ExamRoom() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -21,19 +38,16 @@ export default function ExamRoom() {
   const [current, setCurrent] = useState(0);
   const [aiStatus, setAiStatus] = useState('checking');
   const [sessionStats, setSessionStats] = useState(null);
+  const [frameCount, setFrameCount] = useState(0);
 
-  // ✅ Go back to correct dashboard based on role
-  const goHome = () => {
-    if (user.role === 'admin') nav('/admin');
-    else nav('/dashboard');
-  };
+  const goHome = () => nav(user.role === 'admin' ? '/admin' : '/dashboard');
 
   const addNotif = useCallback((msg, type = 'warn', severity = 'MEDIUM') => {
     const n = { msg, type, severity, id: Date.now(), time: new Date().toLocaleTimeString() };
     setNotifications(ns => [n, ...ns].slice(0, 8));
   }, []);
 
-  // Load exam + check AI health + reset stats
+  // Load exam + check AI + reset stats
   useEffect(() => {
     api.get(`/exam/${id}`)
       .then(r => { setExam(r.data); setTimeLeft(r.data.duration * 60); })
@@ -54,32 +68,50 @@ export default function ExamRoom() {
     return () => clearTimeout(t);
   }, [timeLeft, submitted]);
 
-  // AI Proctoring every 5s
+  // ── AI Proctoring every 10s (Render needs more time than Colab) ──
   useEffect(() => {
     if (submitted) return;
     const interval = setInterval(async () => {
       if (!webcamRef.current) return;
       const imageSrc = webcamRef.current.getScreenshot();
       if (!imageSrc) return;
+
       try {
-        const { data } = await api.post('/proctor/analyze', { image: imageSrc, examId: id });
-        if (data.error === 'AI offline') { setAiStatus('offline'); return; }
+        // ✅ Compress image from ~200KB to ~15KB before sending
+        const compressed = await compressImage(imageSrc, 0.4, 320);
+        setFrameCount(f => f + 1);
+
+        const { data } = await api.post('/proctor/analyze', {
+          image: compressed,
+          examId: id
+        });
+
+        if (data.error === 'AI offline') {
+          setAiStatus('offline');
+          return;
+        }
+
         setAiStatus('online');
-        if (data.violations && data.violations.length > 0)
+
+        if (data.violations && data.violations.length > 0) {
           data.violations.forEach(v => addNotif(v.message, v.type, v.severity));
-      } catch {
+        }
+
+      } catch (err) {
+        console.error('Proctoring error:', err.message);
         setAiStatus('offline');
       }
-    }, 5000);
+    }, 10000); // ✅ 10s interval — Render is slower than Colab
+
     return () => clearInterval(interval);
   }, [submitted, id, addNotif]);
 
-  // Fetch session stats every 30s
+  // Fetch session stats every 60s
   useEffect(() => {
     if (submitted) return;
     const interval = setInterval(() => {
       api.get('/proctor/stats').then(r => setSessionStats(r.data)).catch(() => {});
-    }, 30000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [submitted]);
 
@@ -130,7 +162,6 @@ export default function ExamRoom() {
             )}
           </div>
         )}
-        {/* ✅ Goes to correct dashboard */}
         <button style={S.homeBtn} onClick={goHome}>Back to Dashboard</button>
       </div>
     </div>
@@ -147,9 +178,13 @@ export default function ExamRoom() {
         {timeLeft !== null && <Timer seconds={timeLeft} />}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={S.aiStatus}>
-            <span style={{ ...S.aiDot, background: aiStatus === 'online' ? 'var(--accent)' : aiStatus === 'offline' ? 'var(--danger)' : 'var(--warn)' }} />
+            <span style={{
+              ...S.aiDot,
+              background: aiStatus === 'online' ? 'var(--accent)' : aiStatus === 'offline' ? 'var(--danger)' : 'var(--warn)',
+              animation: aiStatus === 'online' ? 'pulse 1.5s infinite' : 'none'
+            }} />
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-              AI {aiStatus === 'online' ? 'Online' : aiStatus === 'offline' ? 'Offline' : 'Checking...'}
+              AI {aiStatus === 'online' ? `Online (${frameCount} frames)` : aiStatus === 'offline' ? 'Offline' : 'Checking...'}
             </span>
           </div>
           <button style={S.submitBtn} onClick={handleSubmit}>Submit Exam</button>
@@ -173,11 +208,15 @@ export default function ExamRoom() {
               isActive={!submitted}
             />
           )}
+
+          {/* Session Stats */}
           {sessionStats && (
             <div style={S.statsBox}>
               <div style={S.statsTitle}>📊 Session Stats</div>
-              <div style={S.statsRow}><span>Frames analyzed</span><span>{sessionStats.total_frames}</span></div>
-              <div style={S.statsRow}><span>Violations</span>
+              <div style={S.statsRow}><span>Frames sent</span><span>{frameCount}</span></div>
+              <div style={S.statsRow}><span>AI processed</span><span>{sessionStats.total_frames}</span></div>
+              <div style={S.statsRow}>
+                <span>Violations</span>
                 <span style={{ color: sessionStats.total_violations > 0 ? 'var(--danger)' : 'var(--accent)' }}>
                   {sessionStats.total_violations}
                 </span>
@@ -186,6 +225,7 @@ export default function ExamRoom() {
               <div style={S.statsRow}><span>Objects</span><span>{sessionStats.object_violations}</span></div>
             </div>
           )}
+
           <Notifications items={notifications} />
         </div>
 
@@ -228,7 +268,9 @@ export default function ExamRoom() {
   );
 }
 
-const severityColor = (s) => ({ LOW: '#22c55e40', MEDIUM: '#ffaa0040', HIGH: '#ff444440', CRITICAL: '#ff000060' }[s] || '#ffaa0040');
+const severityColor = (s) => ({
+  LOW: '#22c55e40', MEDIUM: '#ffaa0040', HIGH: '#ff444440', CRITICAL: '#ff000060'
+}[s] || '#ffaa0040');
 
 const S = {
   page: { minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' },
